@@ -1,0 +1,266 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>PvP Game with Login</title>
+    <style>
+        body {
+            font-family: Arial, sans-serif;
+        }
+
+        #messages {
+            border: 1px solid #ccc;
+            padding: 10px;
+            height: 300px;
+            overflow-y: auto;
+            margin-bottom: 10px;
+        }
+
+        .input-group {
+            margin-bottom: 10px;
+        }
+
+        .hidden {
+            display: none;
+        }
+
+        .timer {
+            font-weight: bold;
+        }
+    </style>
+</head>
+<body>
+<h1>PvP Game with Login</h1>
+
+<div id="login-container">
+    <h3>Login</h3>
+    <div>
+        <label for="username">Username:</label>
+        <input type="text" id="username" placeholder="Enter username">
+    </div>
+    <div>
+        <label for="password">Password:</label>
+        <input type="password" id="password" placeholder="Enter password">
+    </div>
+    <button id="login">Login</button>
+</div>
+
+<div id="game-container" class="hidden">
+    <h3>Welcome, <span id="player-name"></span>!</h3>
+
+    <div>
+        <label for="room">Room Name:</label>
+        <input type="text" id="room" placeholder="Enter room name">
+    </div>
+    <button id="connect">Connect</button>
+    <button id="disconnect" disabled>Disconnect</button>
+
+    <h2>Game Messages</h2>
+    <div id="messages"></div>
+
+    <div id="question-container">
+        <h3 id="question">Waiting for a question...</h3>
+    </div>
+
+    <div id="timers">
+        <p id="player1-timer" class="timer">Player 1 Time: 60s</p>
+        <p id="player2-timer" class="timer">Player 2 Time: 60s</p>
+    </div>
+
+    <div class="input-group">
+        <label for="answer">Your Answer:</label>
+        <input type="text" id="answer" placeholder="Type your answer">
+        <button id="submit" disabled>Submit Answer</button>
+    </div>
+
+    <h3 id="status"></h3>
+</div>
+
+<script>
+    const loginButton = document.getElementById('login');
+    const connectButton = document.getElementById('connect');
+    const disconnectButton = document.getElementById('disconnect');
+    const submitButton = document.getElementById('submit');
+    const messagesDiv = document.getElementById('messages');
+    const usernameInput = document.getElementById('username');
+    const passwordInput = document.getElementById('password');
+    const roomInput = document.getElementById('room');
+    const questionElement = document.getElementById('question');
+    const player1Timer = document.getElementById('player1-timer');
+    const player2Timer = document.getElementById('player2-timer');
+    const answerInput = document.getElementById('answer');
+    const playerNameSpan = document.getElementById('player-name');
+    const loginContainer = document.getElementById('login-container');
+    const gameContainer = document.getElementById('game-container');
+    const statusDiv = document.getElementById('status');
+
+    let socket;
+    let jwtToken = "";
+    let playerName = "";
+    let playerTimes = {player1: 60, player2: 60};
+    let currentPlayer = "";
+
+    // Append message to the messages div
+    function appendMessage(content) {
+        const messageElem = document.createElement('p');
+        messageElem.textContent = content;
+        messagesDiv.appendChild(messageElem);
+        messagesDiv.scrollTop = messagesDiv.scrollHeight; // Auto scroll to bottom
+    }
+
+    // Update timers display
+    function updateTimers() {
+        player1Timer.textContent = `Player 1 Time: ${playerTimes.player1}s`;
+        player2Timer.textContent = `Player 2 Time: ${playerTimes.player2}s`;
+    }
+
+    // Login and get JWT token
+    loginButton.addEventListener('click', async () => {
+        const username = usernameInput.value.trim();
+        const password = passwordInput.value.trim();
+
+        if (!username || !password) {
+            alert("Please enter username and password.");
+            return;
+        }
+
+        try {
+            const response = await fetch("http://localhost:8090/api/auth/login/", {
+                method: "POST",
+                headers: {
+                    "Content-Type": "application/json"
+                },
+                body: JSON.stringify({username, password})
+            });
+
+            if (response.ok) {
+                const data = await response.json();
+                jwtToken = data.access;
+                playerName = username;
+                playerNameSpan.textContent = username;
+
+                // Show game container
+                loginContainer.classList.add('hidden');
+                gameContainer.classList.remove('hidden');
+
+                appendMessage("Login successful!");
+            } else {
+                const errorData = await response.json();
+                alert("Login failed: " + (errorData.detail || "Unknown error"));
+            }
+        } catch (error) {
+            console.error("Login error:", error);
+            alert("Failed to connect to the server.");
+        }
+    });
+
+    // Connect WebSocket
+    connectButton.addEventListener('click', () => {
+        const roomName = roomInput.value.trim();
+
+        if (!roomName || !jwtToken) {
+            alert("Please enter room name.");
+            return;
+        }
+
+        const wsUrl = `ws://localhost:8090/ws/game/${roomName}/?token=${jwtToken}`;
+        socket = new WebSocket(wsUrl);
+
+        socket.onopen = () => {
+            appendMessage('Connected to WebSocket in room: ' + roomName);
+            connectButton.disabled = true;
+            disconnectButton.disabled = false;
+            submitButton.disabled = false;
+        };
+
+        socket.onmessage = (event) => {
+            const data = JSON.parse(event.data);
+
+            switch (data.type) {
+                case "start":
+                    appendMessage("Game started! Players: " + data.players.join(", "));
+                    currentPlayer = data.current_turn;
+                    playerTimes.player1 = 60; // Reset timers
+                    playerTimes.player2 = 60;
+                    updateTimers();
+                    break;
+                case "question":
+                    if (data != null) {
+                        questionElement.textContent = data.question;
+                        statusDiv.textContent = "Your Turn!";
+                    } else {
+                        statusDiv.textContent = "Waiting for opponent...";
+                    }
+                    break;
+                case "turn":
+                    appendMessage(data.message);
+                    currentPlayer = data.next_turn;
+                    updateTimers();
+                    break;
+                case "error":
+                    appendMessage("Error: " + data.message);
+                    break;
+                case "end":
+                    appendMessage(`Game Over! Winner: ${data.winner}, Loser: ${data.loser}. Reason: ${data.reason}`);
+                    statusDiv.textContent = `Game Over! Winner: ${data.winner}`;
+                    submitButton.disabled = true;
+                    break;
+                default:
+                    appendMessage("Unknown message type: " + JSON.stringify(data));
+            }
+        };
+
+        socket.onclose = () => {
+            appendMessage('Disconnected from server.');
+            connectButton.disabled = false;
+            disconnectButton.disabled = true;
+            submitButton.disabled = true;
+            statusDiv.textContent = "Disconnected.";
+        };
+
+        socket.onerror = (error) => {
+            appendMessage('WebSocket error: ' + error.message);
+        };
+    });
+
+    // Disconnect WebSocket
+    disconnectButton.addEventListener('click', () => {
+        if (socket) {
+            socket.close();
+        }
+    });
+
+    // Submit Answer
+    submitButton.addEventListener('click', () => {
+        const answer = answerInput.value.trim();
+
+        if (!answer) {
+            alert("Please type an answer.");
+            return;
+        }
+
+        if (socket && socket.readyState === WebSocket.OPEN) {
+            socket.send(JSON.stringify({
+                action: "submit",
+                answer: answer
+            }));
+            answerInput.value = ''; // Clear input after submission
+        } else {
+            alert("WebSocket is not connected.");
+        }
+    });
+
+    // Simulate countdown timers
+    setInterval(() => {
+        if (currentPlayer === playerName && playerTimes.player1 > 0) {
+            playerTimes.player1--;
+            updateTimers();
+        } else if (currentPlayer !== playerName && playerTimes.player2 > 0) {
+            playerTimes.player2--;
+            updateTimers();
+        }
+    }, 1000);
+</script>
+</body>
+</html>
